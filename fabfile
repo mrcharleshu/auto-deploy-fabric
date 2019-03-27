@@ -1,0 +1,184 @@
+#!/usr/bin/env python
+# coding:utf-8
+
+""" fabfile.py
+Author: Charles
+"""
+
+import errno
+import sys
+import time
+import warnings
+
+from fabric.api import env, roles, run, execute, local, cd, settings, task
+from fabric.colors import *
+
+__version__ = '1.0.0'
+current_file_dir = os.path.dirname(__file__)
+# print 'Current file directory = ' + current_file_dir
+
+current_milli_time = lambda: int(round(time.time() * 1000))
+# https://github.com/ansible/ansible/issues/52598
+warnings.filterwarnings(action='ignore', module='.*paramiko.*')
+
+env.roledefs = {
+    'gitlab': ['ubuntu@git.mrcharleshu.com:22', ],
+    'test': ['ubuntu@xxx.xxx.xxx.123:22', ],
+    'staging': ['ubuntu@xxx.xxx.xxx.456:22', ],
+}
+
+env.passwords = {
+    'ubuntu@git.mrcharleshu.com:22': 'x7pZy_A8t=PdF',
+    'ubuntu@xxx.xxx.xxx.123:22': 'HsN@6fpM_4fn4',
+    'ubuntu@xxx.xxx.xxx.456:22': '6&4GwXq#nP2D',
+}
+
+BRANCH_DEVELOP = 'develop'
+BRANCH_RELEASE = 'release'
+
+PROJECT_ENGINE = 'engine'
+PROJECT_STATS_API = 'stats-api'
+
+
+# https://stackoverflow.com/questions/4888568/can-i-catch-error-codes-when-using-fabric-to-run-calls-in-a-remote-shell
+class FabricException(Exception):
+    pass
+
+
+@roles('gitlab')
+def build_docker_image(project, branch):
+    local('pwd')
+    compose_path = '/home/ubuntu/charles-' + project
+    image_path = 'registry.mrcharleshu.com/charles-' + project + '-' + branch + ':latest'
+    with settings(abort_exception=FabricException):
+        try:
+            with cd(compose_path):
+                run('ls -la')
+                run('pwd;git branch')
+                run('git status')
+                run('git pull')  # in case new branch may be created
+                run('git checkout ' + branch)
+                run('git pull')
+                run('docker rmi ' + image_path, warn_only=True)
+                run('docker system prune -f;docker volume prune -f')
+                run('docker build . --tag ' + image_path)
+                run('docker images')
+                run('docker push ' + image_path)
+                run('curl registry.mrcharleshu.com/v2/_catalog')
+                run('pwd;git branch')
+        except FabricException:
+            print red('failed')
+        else:
+            print green('success')
+
+
+def start_docker_image(project, branch):
+    local('pwd')
+    # compose_path = '/home/ubuntu/charles-' + project
+    compose_path = '/home/ubuntu/charles-engine'
+    container = 'local-' + project
+    image_path = 'registry.mrcharleshu.com/charles-' + project + '-' + branch
+    with settings(abort_exception=FabricException):
+        try:
+            with cd(compose_path):
+                run('ls -la')
+                run('pwd;git branch')
+                run('git status')
+                run('git checkout ' + branch)
+                run('git pull')
+                # run('screen -d -m ./scripts/restart-engine-image-develop.sh')
+                # run('./scripts/restart-engine-image-develop.sh;exit 0;')
+                run('docker stop ' + container, warn_only=True)
+                run('docker rm ' + container, warn_only=True)
+                run('docker rmi ' + image_path, warn_only=True)
+                run('docker-compose up -d')
+                run('sleep 10s')
+                run('docker logs ' + container)
+                run('pwd;git branch')
+        except FabricException:
+            print red('failed')
+        else:
+            print green('success')
+
+
+@roles('test')
+def start_test_docker_image(project, branch):
+    start_docker_image(project, branch)
+
+
+@roles('staging')
+def start_staging_docker_image(project, branch):
+    start_docker_image(project, branch)
+
+
+# @task(pre=[clean], post=[publish])
+@task
+def do_deploy_task(project, branch):
+    start_millis = current_milli_time()
+    print yellow('start task ......')
+    if project != PROJECT_ENGINE and project != PROJECT_STATS_API:
+        print 'unsupported project.'
+    execute(build_docker_image, project, branch)
+    if branch == BRANCH_DEVELOP:
+        execute(start_test_docker_image, project, branch)
+    elif branch == BRANCH_RELEASE:
+        execute(start_staging_docker_image, project, branch)
+    else:
+        print 'unsupported branch.'
+    print yellow('task finished')
+    cost_millis = current_milli_time() - start_millis
+    print "Whole deploy process cost {}s, {}ms".format(cost_millis / 1000, cost_millis % 1000)
+
+
+@task
+def deploy_test_engine():
+    do_deploy_task('engine', BRANCH_DEVELOP)
+
+
+@task
+def deploy_test_stats_api():
+    do_deploy_task('stats-api', BRANCH_DEVELOP)
+
+
+@task
+def deploy_staging_engine():
+    do_deploy_task('engine', BRANCH_RELEASE)
+
+
+@task
+def deploy_staging_stats_api():
+    do_deploy_task('stats-api', BRANCH_RELEASE)
+
+
+def local_deploy_test_engine():
+    local('fab -f ' + current_file_dir + '/fabfile.py deploy_test_engine')
+
+
+def local_deploy_test_stats_api():
+    local('fab -f ' + current_file_dir + '/fabfile.py deploy_test_stats_api')
+
+
+def local_deploy_staging_engine():
+    local('fab -f ' + current_file_dir + '/fabfile.py deploy_staging_engine')
+
+
+def local_deploy_staging_stats_api():
+    local('fab -f ' + current_file_dir + '/fabfile.py deploy_staging_stats_api')
+
+
+if __name__ == "__main__":
+    try:
+        print current_milli_time()
+    except KeyboardInterrupt:
+        pass
+    except IOError as e:
+        if e.errno == errno.EPIPE:
+            pass
+        else:
+            raise
+    # Close stderr to prevent printing errors when icdiff is piped to
+    # something that closes before icdiff is done writing
+    #
+    # See: https://stackoverflow.com/questions/26692284/
+    #              how-to-prevent-brokenpipeerror-when-doing-a-flush-in-python
+    sys.stderr.close()

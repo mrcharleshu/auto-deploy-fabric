@@ -1,0 +1,13 @@
+#!/bin/sh
+FABFILE_OPTIONS=$(git config --get fabfile.options)
+GITPAGER=$(git config --get fabfile.pager)
+
+if [ -z "$GITPAGER" ]; then
+  GITPAGER=$(git config --get --default "${PAGER:-less}" core.pager)
+fi
+
+if [ "$GITPAGER" = "more" ] || [ "$GITPAGER" = "less" ]; then
+  GITPAGER="$GITPAGER -R"
+fi
+
+git difftool --no-prompt --extcmd="fabfile $FABFILE_OPTIONS" "$@" | $GITPAGER
