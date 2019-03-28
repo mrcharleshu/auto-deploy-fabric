@@ -1,4 +1,4 @@
-## 最快速使用
+## 一、快速使用
 
 ### 安装
 可以先把本地的ssh公钥设置在git上自己的账号中，免去输入用户名和密码
@@ -19,7 +19,7 @@ pip uninstall auto-deploy-fabric
 - deploy_staging_stats_api
 
 
-## 本地调试使用
+## 二、本地使用
 ### 全局安装`virtualenv`
 ```
 pip install virtualenv
